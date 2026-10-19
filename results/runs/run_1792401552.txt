@@ -1,0 +1,45 @@
+# recidx — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+ponavljanja: 5 | preskakanje trivijalnih radix prolaza: true | disk test: false (1x) | sve u 1 niti
+
+## 1. Izvlačenje (size_bytes, rowid) — puno skeniranje tabele
+vreme: 60435 ms (prvo čitanje posle pokretanja; hladan/topao keš zavisi od prethodnog stanja sistema)
+
+## 2. Inventar
+redova (tačno): 4581340 | max rowid: 4581340 | rupa u rowid: 0
+ulaz u redosledu rowid-a: da
+NULL: 0 | negativnih: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | koren (offset): 1
+najveći ključ: 22055494656 → bajtova u ključu: 5 (toliko radix prolaza je zaista potrebno)
+različitih vrednosti: 939428 | najčešće (vrednost: broj redova):
+  36864: 4318
+  1024: 3444
+  549: 3308
+  42496: 2587
+  36352: 2067
+  33280: 1996
+  322: 1962
+  324: 1936
+  326: 1899
+  328: 1861
+
+## 3. Sortiranje u memoriji (Rust), 4581340 parova = 69.9 MiB
+radix prolaza izvršeno: 5
+| metoda | medijana ms | min | max | dodatna vršna memorija MiB |
+|---|---|---|---|---|
+| radix LSD baza 256 | 126.8 | 114.9 | 135.0 | 69.9 |
+| std sort_by_key (stabilan) | 186.1 | 182.6 | 193.6 | 35.0 |
+| std sort_unstable | 150.7 | 138.4 | 156.5 | 0.0 |
+tačnost: radix == stabilan: DA | radix == sort_unstable: DA | otisak: acfee6ced287e312
+
+## 4. SQLite CREATE INDEX nad istim parovima u :memory: bazi
+- podrazumevano (sorter može da preliva u temp fajl na disku)
+  ubacivanje 4581340 redova: 1543 ms (nije deo indeksa, samo priprema)
+  CREATE INDEX: medijana 1782.0 ms (min 1768.5, max 1797.5) | SQLite highwater iznad osnove: 56.7 MiB
+  otisak: acfee6ced287e312 → ISTI kao radix
+- podešeno (cache_size=2 GiB, temp_store=MEMORY)
+  ubacivanje 4581340 redova: 1539 ms (nije deo indeksa, samo priprema)
+  CREATE INDEX: medijana 2883.5 ms (min 2843.9, max 2907.5) | SQLite highwater iznad osnove: 127.6 MiB
+  otisak: acfee6ced287e312 → ISTI kao radix
+
+(disk test preskočen; pokreni sa --disk)

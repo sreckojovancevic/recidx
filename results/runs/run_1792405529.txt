@@ -1,0 +1,116 @@
+# recidx v0.8 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+ponavljanja: 5 | niti za paralelni deo: 20 | keš parova: true | disk test: true (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## KORAK 2 — izgradnja i pretraga `WHERE size_bytes = ?` (sve u 1 niti)
+parova: 4581340 | upita: 200000 (½ postojeće vrednosti po učestalosti, ¼ nasumične različite, ¼ nasumične u opsegu) | ponavljanja: 5
+Recognition Index, Log(10): bucket-a 25891, nepraznih 20277, najveći 4743, prosek nepraznih 225.9 | tabela 0.10 MiB
+Recognition Index, Log(12): bucket-a 95371, nepraznih 64269, najveći 4417, prosek nepraznih 71.3 | tabela 0.36 MiB
+Recognition Index, Linear(16 bita): bucket-a 42068, nepraznih 1692, najveći 3638389, prosek nepraznih 2707.6 | tabela 0.16 MiB
+
+| struktura | izgradnja ms (medijana) | memorija MiB | 200000 upita ms (medijana) | ns po upitu | vraćeno redova | isti rezultat |
+|---|---|---|---|---|---|---|
+| Recognition Index, Log(10) | 126.1 | 70.0 | 115.2 | 576 | 10774851 | DA |
+| Recognition Index, Log(12) | 124.9 | 70.3 | 106.0 | 530 | 10774851 | DA |
+| Recognition Index, Linear(16 bita) | 123.1 | 70.1 | 132.4 | 662 | 10774851 | DA |
+| Recognition B dinamički (bucket nizovi + Fenwick) | 150.3 | 76.5 | 112.2 | 561 | 10774851 | DA |
+| sortiran niz + binarna pretraga | 116.3 | 69.9 | 134.8 | 674 | 10774851 | DA |
+| heš mapa (FxHash) ključ → rowid-ovi | 385.1 | 124.7 | 95.0 | 475 | 10774851 | DA |
+| Rust BTreeSet (B-tree u memoriji) | 294.5 | 79.4 | 137.2 | 686 | 10774851 | DA |
+| SQLite B-tree, :memory: (upit kroz SQL; memorija = stranice indeksa) | 1788.6 | 51.2 | 776.2 | 3881 | 10774851 | DA |
+| SQLite B-tree, baza na disku (upit kroz SQL) | 4974.3 | na disku | 1959.6 | 9798 | 10774851 | DA |
+
+NAPOMENE:
+- izgradnja Recognition Indexa = LENS radix sort + tabela bucket-a; sortiranog niza = samo sort; heš i BTreeSet = ubacivanje iz ulaza.
+- memorija sortiranih struktura uključuje niz parova (16 B po redu); heš je izmeren alokatorom.
+- SQLite upit uključuje SQL mašineriju (bind, VDBE, korak po red) — to je stvarna cena korišćenja kroz SQLite;
+  Rust strukture bi kroz virtualnu tabelu takođe dobile deo te cene. Poređenje čiste strukture je među Rust redovima.
+- heš podržava samo jednakost; sortirane strukture i B-tree podržavaju i opsege (nije mereno u ovom koraku).
+
+## KORAK 3 — opsezi `WHERE size_bytes BETWEEN a AND b` (sve u 1 niti)
+opsega po klasi: 2000 | klase širine: b = a + a·w, w ∈ {0,1%, 1%, 10%} | ponavljanja: 5
+COUNT = samo broj pogodaka; FETCH = svi rowid-ovi iz opsega (redosled ključ, rowid)
+parova: 4581340 | prosečno pogodaka po opsegu: 0,1% → 454 | 1% → 4001 | 10% → 37405
+
+### COUNT — ns po upitu
+| struktura | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition Index, Log(12) | 101 | 205 | 236 | DA |
+| Recognition Index, Log(10) | 177 | 233 | 276 | DA |
+| Recognition B dinamički (bucket nizovi + Fenwick) | 112 | 254 | 316 | DA |
+| sortiran niz + binarna pretraga | 223 | 527 | 649 | DA |
+| Rust BTreeSet (B-tree u memoriji) | 1064 | 11584 | 101452 | DA |
+| SQLite B-tree, :memory: (kroz SQL) | 12394 | 100609 | 936821 | DA |
+| SQLite B-tree, disk (kroz SQL) | 21369 | 130304 | 1163135 | DA |
+
+### FETCH — ns po upitu
+| struktura | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition Index, Log(12) | 3361 | 27973 | 255712 | DA |
+| Recognition Index, Log(10) | 3373 | 27626 | 255906 | DA |
+| Recognition B dinamički (bucket nizovi + Fenwick) | 3334 | 29379 | 267408 | DA |
+| sortiran niz + binarna pretraga | 3314 | 28707 | 256342 | DA |
+| Rust BTreeSet (B-tree u memoriji) | 3812 | 31918 | 289087 | DA |
+| SQLite B-tree, :memory: (kroz SQL) | 26358 | 232725 | 2187020 | DA |
+| SQLite B-tree, disk (kroz SQL) | 36505 | 267776 | 2425690 | DA |
+
+NAPOMENE:
+- heš mapa nije u tabeli: ne podržava opsege bez punog prolaska kroz sve ključeve.
+- COUNT kod sortiranih nizova = dve pretrage granica; kod B dinamičkog = dve pretrage + Fenwick zbir celih bucket-a; BTreeSet i SQLite broje prolaskom kroz opseg.
+- SQLite vremena uključuju SQL mašineriju; nije čisto poređenje struktura.
+
+## KORAK 4 — izmene (CRUD), sve u 1 niti, bucket funkcija Log(12)
+operacija: 100000 (Create 29889 | Delete 25084 | Update 25206 | Read 19821) | generisanje + referentni model: 461 ms
+ograničenja broja operacija: A najviše 3000 (svaka izmena pomera ceo niz); SQLite disk sa serijom 1 najviše 2000 uz FULL (svaka operacija = commit sa fsync) i 10000 uz OFF
+SQLite disk: posebna tabela recidx_t(k) sa jednim indeksom u istom fajlu (fer prema strukturama sa jednim indeksom)
+SQLite disk u dve varijante: synchronous=FULL (podrazumevano; commit čeka fsync = trajnost) i synchronous=OFF (isti upis, bez čekanja fsync-a)
+Rust strukture nemaju upis na disk ni trajnost; najbliže im je SQLite :memory: i SQLite disk OFF
+
+### Serija od 1 operacija (commit po seriji; za Rust strukture serija nema efekta osim kod C na kraju)
+| struktura | izvršeno operacija | ukupno ms | µs po operaciji | priprema ms | memorija MiB | čitanja tačna | krajnje stanje = model | napomena |
+|---|---|---|---|---|---|---|---|---|
+| Recognition A — jedan niz, izmena odmah | 3000 | 8789.3 | 2929.76 | 20 | 70.3 | DA | DA |  |
+| Recognition B — niz po bucket-u + Fenwick | 100000 | 74.3 | 0.74 | 21 | 76.5 | DA | DA |  |
+| Recognition C — bafer + ponovna izgradnja | 100000 | 130.9 | 1.31 | 21 | 70.3 | DA | DA | prag 65536, ponovnih izgradnji 2, ukupno 72 ms |
+| Rust BTreeSet (B-tree u memoriji) | 100000 | 58.8 | 0.59 | 68 | 79.4 | DA | DA |  |
+| heš mapa (FxHash), bez opsega | 100000 | 33.8 | 0.34 | 195 | 124.7 | DA | DA |  |
+| SQLite :memory: (tabela + 1 indeks) | 100000 | 868.8 | 8.69 | 3353 | — | DA | DA |  |
+| SQLite disk, synchronous=FULL (sa fsync) | 2000 | 1581.2 | 790.62 | 6511 | — | DA | DA |  |
+| SQLite disk, synchronous=OFF (bez fsync) | 10000 | 594.6 | 59.46 | 5902 | — | DA | DA |  |
+
+### Serija od 1000 operacija (commit po seriji; za Rust strukture serija nema efekta osim kod C na kraju)
+| struktura | izvršeno operacija | ukupno ms | µs po operaciji | priprema ms | memorija MiB | čitanja tačna | krajnje stanje = model | napomena |
+|---|---|---|---|---|---|---|---|---|
+| Recognition A — jedan niz, izmena odmah | 3000 | 8689.5 | 2896.50 | 20 | 70.3 | DA | DA |  |
+| Recognition B — niz po bucket-u + Fenwick | 100000 | 71.8 | 0.72 | 34 | 76.5 | DA | DA |  |
+| Recognition C — bafer + ponovna izgradnja | 100000 | 129.6 | 1.30 | 21 | 70.3 | DA | DA | prag 65536, ponovnih izgradnji 2, ukupno 72 ms |
+| Rust BTreeSet (B-tree u memoriji) | 100000 | 61.4 | 0.61 | 71 | 79.4 | DA | DA |  |
+| heš mapa (FxHash), bez opsega | 100000 | 34.9 | 0.35 | 198 | 124.7 | DA | DA |  |
+| SQLite :memory: (tabela + 1 indeks) | 100000 | 535.3 | 5.35 | 3345 | — | DA | DA |  |
+| SQLite disk, synchronous=FULL (sa fsync) | 100000 | 15758.3 | 157.58 | 6485 | — | DA | DA |  |
+| SQLite disk, synchronous=OFF (bez fsync) | 100000 | 4548.1 | 45.48 | 5878 | — | DA | DA |  |
+
+### Serija od 100000 operacija (commit po seriji; za Rust strukture serija nema efekta osim kod C na kraju)
+| struktura | izvršeno operacija | ukupno ms | µs po operaciji | priprema ms | memorija MiB | čitanja tačna | krajnje stanje = model | napomena |
+|---|---|---|---|---|---|---|---|---|
+| Recognition A — jedan niz, izmena odmah | 3000 | 8880.6 | 2960.20 | 23 | 70.3 | DA | DA |  |
+| Recognition B — niz po bucket-u + Fenwick | 100000 | 72.8 | 0.73 | 24 | 76.5 | DA | DA |  |
+| Recognition C — bafer + ponovna izgradnja | 100000 | 131.0 | 1.31 | 21 | 70.3 | DA | DA | prag 65536, ponovnih izgradnji 2, ukupno 73 ms |
+| Rust BTreeSet (B-tree u memoriji) | 100000 | 59.0 | 0.59 | 69 | 79.4 | DA | DA |  |
+| heš mapa (FxHash), bez opsega | 100000 | 34.7 | 0.35 | 197 | 124.7 | DA | DA |  |
+| SQLite :memory: (tabela + 1 indeks) | 100000 | 363.9 | 3.64 | 3355 | — | DA | DA |  |
+| SQLite disk, synchronous=FULL (sa fsync) | 100000 | 3490.2 | 34.90 | 6537 | — | DA | DA |  |
+| SQLite disk, synchronous=OFF (bez fsync) | 100000 | 2920.2 | 29.20 | 5872 | — | DA | DA |  |
+
+NAPOMENE:
+- µs po operaciji = ukupno vreme / broj operacija (mešavina Create/Delete/Update/Read; Update = brisanje + ubacivanje u indeksu).
+- priprema = izgradnja početne strukture od svih redova (nije u ukupnom vremenu); memorija = alokator, posle pripreme.
+- C uključuje i završnu ponovnu izgradnju (ispražnjen bafer) u ukupnom vremenu.
+- SQLite vremena uključuju SQL mašineriju; SQLite disk FULL uključuje commit + fsync po seriji, OFF samo commit bez čekanja fsync-a.

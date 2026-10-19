@@ -1,0 +1,36 @@
+# recidx v0.4 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+ponavljanja: 5 | niti za paralelni deo: 20 | keš parova: true | disk test: false (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## KORAK 3 — opsezi `WHERE size_bytes BETWEEN a AND b` (sve u 1 niti)
+opsega po klasi: 2000 | klase širine: b = a + a·w, w ∈ {0,1%, 1%, 10%} | ponavljanja: 5
+COUNT = samo broj pogodaka; FETCH = svi rowid-ovi iz opsega (redosled ključ, rowid)
+parova: 4581340 | prosečno pogodaka po opsegu: 0,1% → 454 | 1% → 4001 | 10% → 37405
+
+### COUNT — ns po upitu
+| struktura | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition Index, Log(12) | 143 | 219 | 227 | DA |
+| Recognition Index, Log(10) | 229 | 243 | 268 | DA |
+| sortiran niz + binarna pretraga | 219 | 539 | 660 | DA |
+| SQLite B-tree, :memory: (kroz SQL) | 12421 | 100544 | 936835 | DA |
+
+### FETCH — ns po upitu
+| struktura | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition Index, Log(12) | 3419 | 29239 | 258640 | DA |
+| Recognition Index, Log(10) | 3253 | 28073 | 255863 | DA |
+| sortiran niz + binarna pretraga | 3277 | 28341 | 257370 | DA |
+| SQLite B-tree, :memory: (kroz SQL) | 28824 | 245820 | 2195534 | DA |
+
+NAPOMENE:
+- heš mapa nije u tabeli: ne podržava opsege bez punog prolaska kroz sve ključeve.
+- COUNT kod sortiranih struktura = dve pretrage granica, bez prolaska kroz redove; SQLite broji prolaskom kroz opseg indeksa.
+- SQLite vremena uključuju SQL mašineriju; nije čisto poređenje struktura.

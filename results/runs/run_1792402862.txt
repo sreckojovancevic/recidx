@@ -1,0 +1,32 @@
+# recidx v0.3 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+ponavljanja: 5 | niti za paralelni deo: 20 | keš parova: true | disk test: false (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## KORAK 2 — izgradnja i pretraga `WHERE size_bytes = ?` (sve u 1 niti)
+parova: 4581340 | upita: 200000 (½ postojeće vrednosti po učestalosti, ¼ nasumične različite, ¼ nasumične u opsegu) | ponavljanja: 5
+Recognition Index, Log(10): bucket-a 25891, nepraznih 20277, najveći 4743, prosek nepraznih 225.9 | tabela 0.10 MiB
+Recognition Index, Log(12): bucket-a 95371, nepraznih 64269, najveći 4417, prosek nepraznih 71.3 | tabela 0.36 MiB
+Recognition Index, Linear(16 bita): bucket-a 42068, nepraznih 1692, najveći 3638389, prosek nepraznih 2707.6 | tabela 0.16 MiB
+
+| struktura | izgradnja ms (medijana) | memorija MiB | 200000 upita ms (medijana) | ns po upitu | vraćeno redova | isti rezultat |
+|---|---|---|---|---|---|---|
+| Recognition Index, Log(10) | 135.1 | 70.0 | 112.0 | 560 | 10774851 | DA |
+| Recognition Index, Log(12) | 133.5 | 70.3 | 105.8 | 529 | 10774851 | DA |
+| Recognition Index, Linear(16 bita) | 131.7 | 70.1 | 135.6 | 678 | 10774851 | DA |
+| sortiran niz + binarna pretraga | 125.2 | 69.9 | 136.5 | 683 | 10774851 | DA |
+| heš mapa (FxHash) ključ → rowid-ovi | 398.6 | 124.7 | 95.5 | 478 | 10774851 | DA |
+| SQLite B-tree, :memory: (upit kroz SQL; memorija = stranice indeksa) | 1767.9 | 51.2 | 785.0 | 3925 | 10774851 | DA |
+
+NAPOMENE:
+- izgradnja Recognition Indexa = LENS radix sort + tabela bucket-a; sortiranog niza = samo sort; heš = ubacivanje iz ulaza.
+- memorija sortiranih struktura uključuje niz parova (16 B po redu); heš je izmeren alokatorom.
+- SQLite upit uključuje SQL mašineriju (bind, VDBE, korak po red) — to je stvarna cena korišćenja kroz SQLite;
+  Rust strukture bi kroz virtualnu tabelu takođe dobile deo te cene. Poređenje čiste strukture je među Rust redovima.
+- heš podržava samo jednakost; sortirane strukture i B-tree podržavaju i opsege (nije mereno u ovom koraku).

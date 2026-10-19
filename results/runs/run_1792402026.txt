@@ -1,0 +1,37 @@
+# recidx v0.2 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+ponavljanja: 5 | niti za paralelni deo: 20 | keš parova: true | disk test: true (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## 3a. Sortiranje u memoriji, 1 nit — 4581340 parova = 69.9 MiB (alokacija pomoćnog bafera je u vremenu)
+| metoda | medijana ms | min | max | odnos prema std sort_unstable | dodatna vršna mem. MiB | radix prolaza | isti redosled |
+|---|---|---|---|---|---|---|---|
+| LENS radix (1 nit) | 139.7 | 126.7 | 157.7 | 1.11× | 69.9 | 5 | DA |
+| radix v0.1 (bez unsafe) | 132.1 | 117.5 | 139.0 | 1.17× | 69.9 | 5 | DA |
+| std sort_by_key (stabilan) | 200.9 | 199.0 | 221.9 | 0.77× | 35.0 | - | DA |
+| std sort_unstable | 154.5 | 144.8 | 170.5 | 1.00× | 0.0 | - | DA |
+
+## 3b. Sortiranje u memoriji, 20 niti
+| metoda | medijana ms | min | max | odnos prema rayon par_sort_unstable | dodatna vršna mem. MiB | radix prolaza | isti redosled |
+|---|---|---|---|---|---|---|---|
+| LENS radix | 84.5 | 82.2 | 91.7 | 0.50× | 70.0 | 5 | DA |
+| rayon par_sort_by_key (stabilan) | 88.0 | 86.6 | 89.9 | 0.48× | 70.0 | - | DA |
+| rayon par_sort_unstable | 41.9 | 37.1 | 44.3 | 1.00× | 0.0 | - | DA |
+
+## 4. SQLite CREATE INDEX nad istim parovima u :memory: bazi (sort + izgradnja B-tree u memoriji)
+| konfiguracija | medijana ms | min | max | highwater MiB | isti redosled |
+|---|---|---|---|---|---|
+| podrazumevano, PRAGMA threads=0 | 1820.2 | 1798.8 | 1895.4 | 56.7 | DA |
+| podrazumevano, PRAGMA threads=20 | 782.2 | 747.5 | 860.1 | 72.3 | DA |
+| cache 2 GiB + temp_store=MEMORY, PRAGMA threads=0 | 3003.3 | 2897.4 | 3078.2 | 127.6 | DA |
+najbolji SQLite 782.2 ms naspram LENS radix 139.7 ms (1 nit) / 84.5 ms (20 niti)
+NAPOMENA: SQLite pored sortiranja kodira zapise i gradi B-tree; radix samo uređuje niz. Odnos nije "isti posao, brže".
+
+## 5. SQLite CREATE INDEX nad pravom bazom (skeniranje tabele + sort + B-tree + upis)
+CREATE INDEX: medijana 5018 ms (min 5018, max 5018), ponavljanja 1 | isti redosled: DA

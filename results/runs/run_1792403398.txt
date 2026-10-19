@@ -1,0 +1,38 @@
+# recidx v0.4 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+ponavljanja: 5 | niti za paralelni deo: 20 | keš parova: true | disk test: true (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## KORAK 3 — opsezi `WHERE size_bytes BETWEEN a AND b` (sve u 1 niti)
+opsega po klasi: 2000 | klase širine: b = a + a·w, w ∈ {0,1%, 1%, 10%} | ponavljanja: 5
+COUNT = samo broj pogodaka; FETCH = svi rowid-ovi iz opsega (redosled ključ, rowid)
+parova: 4581340 | prosečno pogodaka po opsegu: 0,1% → 454 | 1% → 4001 | 10% → 37405
+
+### COUNT — ns po upitu
+| struktura | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition Index, Log(12) | 141 | 182 | 224 | DA |
+| Recognition Index, Log(10) | 93 | 227 | 290 | DA |
+| sortiran niz + binarna pretraga | 236 | 524 | 688 | DA |
+| SQLite B-tree, :memory: (kroz SQL) | 11894 | 100862 | 934677 | DA |
+| SQLite B-tree, disk (kroz SQL) | 21236 | 131481 | 1155366 | DA |
+
+### FETCH — ns po upitu
+| struktura | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition Index, Log(12) | 3315 | 27319 | 257996 | DA |
+| Recognition Index, Log(10) | 3169 | 27348 | 257122 | DA |
+| sortiran niz + binarna pretraga | 3295 | 28303 | 263162 | DA |
+| SQLite B-tree, :memory: (kroz SQL) | 28574 | 233517 | 2182778 | DA |
+| SQLite B-tree, disk (kroz SQL) | 36431 | 268048 | 2517847 | DA |
+
+NAPOMENE:
+- heš mapa nije u tabeli: ne podržava opsege bez punog prolaska kroz sve ključeve.
+- COUNT kod sortiranih struktura = dve pretrage granica, bez prolaska kroz redove; SQLite broji prolaskom kroz opseg indeksa.
+- SQLite vremena uključuju SQL mašineriju; nije čisto poređenje struktura.

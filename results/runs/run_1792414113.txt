@@ -1,0 +1,50 @@
+# recidx v0.9 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+procesor: 10 fizičkih jezgara, 20 logičkih | podrazumevano niti = fizička − 1
+ponavljanja: 5 | niti za paralelni deo: 9 | keš parova: true | disk test: false (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## 3a. Sortiranje u memoriji, 1 nit — 4581340 parova = 69.9 MiB (alokacija pomoćnog bafera je u vremenu)
+| metoda | medijana ms | min | max | odnos prema std sort_unstable | dodatna vršna mem. MiB | radix prolaza | isti redosled |
+|---|---|---|---|---|---|---|---|
+| LENS radix (1 nit) | 127.3 | 116.6 | 143.5 | 1.09× | 69.9 | 5 | DA |
+| LENS radix + treći blok W=16 (1 nit) | 130.9 | 127.9 | 143.3 | 1.06× | 70.0 | 5 | DA |
+| LENS radix, spojen histogram v0.9 (1 nit) | 100.4 | 98.9 | 123.7 | 1.38× | 69.9 | 5 | DA |
+| radix v0.1 (bez unsafe) | 123.4 | 112.8 | 144.7 | 1.13× | 69.9 | 5 | DA |
+| std sort_by_key (stabilan) | 186.8 | 174.6 | 196.0 | 0.74× | 35.0 | - | DA |
+| std sort_unstable | 138.9 | 136.6 | 156.3 | 1.00× | 0.0 | - | DA |
+
+## 3b. Sortiranje u memoriji, 9 niti
+| metoda | medijana ms | min | max | odnos prema rayon par_sort_unstable | dodatna vršna mem. MiB | radix prolaza | isti redosled |
+|---|---|---|---|---|---|---|---|
+| LENS radix | 77.4 | 75.4 | 86.5 | 0.51× | 69.9 | 5 | DA |
+| LENS radix + treći blok W=8 | 77.5 | 75.4 | 79.6 | 0.51× | 70.2 | 5 | DA |
+| LENS radix + treći blok W=16 | 77.5 | 77.0 | 81.7 | 0.51× | 70.5 | 5 | DA |
+| LENS radix + treći blok W=32 | 76.7 | 76.4 | 80.6 | 0.51× | 71.1 | 5 | DA |
+| LENS radix, spojen histogram v0.9 | 62.5 | 59.9 | 63.6 | 0.63× | 70.1 | 5 | DA |
+| rayon par_sort_by_key (stabilan) | 78.4 | 76.9 | 86.4 | 0.50× | 70.0 | - | DA |
+| rayon par_sort_unstable | 39.2 | 37.8 | 40.8 | 1.00× | 0.0 | - | DA |
+
+## 4. SQLite CREATE INDEX nad istim parovima u :memory: bazi (sort + izgradnja B-tree u memoriji)
+| konfiguracija | medijana ms | min | max | highwater MiB | isti redosled |
+|---|---|---|---|---|---|
+| podrazumevano, PRAGMA threads=0 | 1803.3 | 1786.9 | 1930.5 | 56.7 | DA |
+| podrazumevano, PRAGMA threads=9 | 801.5 | 741.5 | 896.9 | 72.3 | DA |
+| cache 2 GiB + temp_store=MEMORY, PRAGMA threads=0 | 2890.8 | 2859.2 | 2958.7 | 127.6 | DA |
+
+### Skaliranje na niti (1 nit → 9 niti), isti algoritam
+LENS radix: 127.3 ms → 77.4 ms = 1.65× ubrzanje
+LENS radix + treći blok W=16: 130.9 ms → 77.5 ms = 1.69× ubrzanje
+LENS radix, spojen histogram v0.9: 100.4 ms → 62.5 ms = 1.61× ubrzanje
+(treći blok = mali lokalni bafer po bucket-u između izvora i odredišta; vidi D:\sqliteRecog\IDEJA_treci_blok.md)
+PROVERA PREDVIĐANJA (zapisano pre merenja): spojen histogram na 9 niti 62.5 ms naspram LENS radix 77.4 ms; predviđeno ~45–55 ms ako je radix ograničen protokom memorije
+najbolji SQLite 801.5 ms naspram LENS radix 127.3 ms (1 nit) / 77.4 ms (9 niti)
+NAPOMENA: SQLite pored sortiranja kodira zapise i gradi B-tree; radix samo uređuje niz. Odnos nije "isti posao, brže".
+
+(disk test preskočen; pokreni sa --disk)

@@ -1,0 +1,51 @@
+# recidx v0.5 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+ponavljanja: 5 | niti za paralelni deo: 20 | keš parova: true | disk test: false (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## KORAK 4 — izmene (CRUD), sve u 1 niti, bucket funkcija Log(12)
+operacija: 100000 (Create 29889 | Delete 25084 | Update 25206 | Read 19821) | generisanje + referentni model: 515 ms
+ograničenja broja operacija: A najviše 3000 (svaka izmena pomera ceo niz); SQLite disk sa serijom 1 najviše 2000 (svaka operacija = commit sa fsync)
+SQLite disk: posebna tabela recidx_t(k) sa jednim indeksom u istom fajlu (fer prema strukturama sa jednim indeksom); synchronous podrazumevano (FULL)
+
+### Serija od 1 operacija (commit po seriji; za Rust strukture serija nema efekta osim kod C na kraju)
+| struktura | izvršeno operacija | ukupno ms | µs po operaciji | priprema ms | memorija MiB | čitanja tačna | krajnje stanje = model | napomena |
+|---|---|---|---|---|---|---|---|---|
+| Recognition A — jedan niz, izmena odmah | 3000 | 8678.8 | 2892.94 | 24 | 70.3 | DA | DA |  |
+| Recognition B — niz po bucket-u | 100000 | 71.2 | 0.71 | 43 | 72.1 | DA | DA |  |
+| Recognition C — bafer + ponovna izgradnja | 100000 | 141.0 | 1.41 | 20 | 70.3 | DA | DA | prag 65536, ponovnih izgradnji 2, ukupno 83 ms |
+| Rust BTreeSet (B-tree u memoriji) | 100000 | 64.8 | 0.65 | 75 | 79.4 | DA | DA |  |
+| heš mapa (FxHash), bez opsega | 100000 | 38.5 | 0.38 | 216 | 124.7 | DA | DA |  |
+| SQLite :memory: (tabela + 1 indeks) | 100000 | 856.0 | 8.56 | 3379 | — | DA | DA |  |
+
+### Serija od 1000 operacija (commit po seriji; za Rust strukture serija nema efekta osim kod C na kraju)
+| struktura | izvršeno operacija | ukupno ms | µs po operaciji | priprema ms | memorija MiB | čitanja tačna | krajnje stanje = model | napomena |
+|---|---|---|---|---|---|---|---|---|
+| Recognition A — jedan niz, izmena odmah | 3000 | 8591.5 | 2863.83 | 21 | 70.3 | DA | DA |  |
+| Recognition B — niz po bucket-u | 100000 | 69.6 | 0.70 | 40 | 72.1 | DA | DA |  |
+| Recognition C — bafer + ponovna izgradnja | 100000 | 128.3 | 1.28 | 21 | 70.3 | DA | DA | prag 65536, ponovnih izgradnji 2, ukupno 71 ms |
+| Rust BTreeSet (B-tree u memoriji) | 100000 | 59.2 | 0.59 | 70 | 79.4 | DA | DA |  |
+| heš mapa (FxHash), bez opsega | 100000 | 33.9 | 0.34 | 206 | 124.7 | DA | DA |  |
+| SQLite :memory: (tabela + 1 indeks) | 100000 | 517.6 | 5.18 | 3433 | — | DA | DA |  |
+
+### Serija od 100000 operacija (commit po seriji; za Rust strukture serija nema efekta osim kod C na kraju)
+| struktura | izvršeno operacija | ukupno ms | µs po operaciji | priprema ms | memorija MiB | čitanja tačna | krajnje stanje = model | napomena |
+|---|---|---|---|---|---|---|---|---|
+| Recognition A — jedan niz, izmena odmah | 3000 | 8870.0 | 2956.68 | 20 | 70.3 | DA | DA |  |
+| Recognition B — niz po bucket-u | 100000 | 68.9 | 0.69 | 41 | 72.1 | DA | DA |  |
+| Recognition C — bafer + ponovna izgradnja | 100000 | 132.8 | 1.33 | 21 | 70.3 | DA | DA | prag 65536, ponovnih izgradnji 2, ukupno 74 ms |
+| Rust BTreeSet (B-tree u memoriji) | 100000 | 58.4 | 0.58 | 67 | 79.4 | DA | DA |  |
+| heš mapa (FxHash), bez opsega | 100000 | 34.1 | 0.34 | 204 | 124.7 | DA | DA |  |
+| SQLite :memory: (tabela + 1 indeks) | 100000 | 361.7 | 3.62 | 3374 | — | DA | DA |  |
+
+NAPOMENE:
+- µs po operaciji = ukupno vreme / broj operacija (mešavina Create/Delete/Update/Read; Update = brisanje + ubacivanje u indeksu).
+- priprema = izgradnja početne strukture od svih redova (nije u ukupnom vremenu); memorija = alokator, posle pripreme.
+- C uključuje i završnu ponovnu izgradnju (ispražnjen bafer) u ukupnom vremenu.
+- SQLite vremena uključuju SQL mašineriju; SQLite disk uključuje commit/fsync po seriji.
