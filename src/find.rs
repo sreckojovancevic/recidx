@@ -333,10 +333,10 @@ fn sqlite_queries(c: &Connection, sql: &str, queries: &[i64], reps: usize) -> (V
 
 // ======================= KORAK 3: opsezi (BETWEEN) =======================
 
-const CLASSES: [(&str, f64); 3] = [("0,1%", 0.001), ("1%", 0.01), ("10%", 0.1)];
+pub(crate) const CLASSES: [(&str, f64); 3] = [("0,1%", 0.001), ("1%", 0.01), ("10%", 0.1)];
 
 /// Opseg [a, a + max(1, a·w)], a iz istog generatora kao kod jednakosti.
-fn make_ranges(raw: &[(Option<i64>, i64)], sorted: &[(u64, i64)], root: i64, per_class: usize) -> Vec<Vec<(i64, i64)>> {
+pub(crate) fn make_ranges(raw: &[(Option<i64>, i64)], sorted: &[(u64, i64)], root: i64, per_class: usize) -> Vec<Vec<(i64, i64)>> {
     let starts = make_queries(raw, sorted, root, per_class);
     CLASSES.iter().map(|&(_, w)| starts.iter().map(|&a| (a, a + ((a as f64 * w) as i64).max(1))).collect()).collect()
 }

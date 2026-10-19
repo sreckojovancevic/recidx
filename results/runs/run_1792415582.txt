@@ -1,0 +1,44 @@
+# recidx v0.11 — Recognition Index, korak 1: backup_index.size_bytes
+SQLite (bundled): 3.46.0 | baza: ../db/index.db
+procesor: 10 fizičkih jezgara, 20 logičkih | podrazumevano niti = fizička − 1
+ponavljanja: 5 | niti za paralelni deo: 9 | keš parova: true | disk test: false (1x)
+
+## 1. Izvlačenje: učitano iz results/pairs_cache.bin (vreme izvlačenja nije mereno u ovom pokretanju)
+
+## 2. Inventar
+redova: 4581340 | ulaz u redosledu rowid-a: da | NULL: 0 | > u32::MAX: 47
+min: Some(1) | max: Some(22055494656) | najveći ključ: 22055494656 → potrebno bajtova: 5
+različitih vrednosti: 939428 | otisak reference (ključ, rowid): acfee6ced287e312
+
+## KORAK 5 — Recognition Index korišćen IZ SQLite-a (virtualna tabela), sve u 1 niti
+plan: SELECT rowid FROM recog WHERE k = ?1  →  SCAN recog VIRTUAL TABLE INDEX 1:
+plan: SELECT rowid FROM recog WHERE k BETWEEN ?1 AND ?2  →  SCAN recog VIRTUAL TABLE INDEX 10:
+plan: SELECT count(*) FROM recog WHERE k BETWEEN ?1 AND ?2  →  SCAN recog VIRTUAL TABLE INDEX 10:
+
+### Jednakost `WHERE k = ?`, 200000 upita — ns po upitu
+| način | ns po upitu | odnos prema B-tree kroz SQL | isti rezultat |
+|---|---|---|---|
+| Recognition Index direktno iz Rust-a (bez SQL-a) | 556 | 0.14× | DA |
+| Recognition Index kroz virtualnu tabelu (SQL) | 2746 | 0.67× | DA |
+| SQLite B-tree kroz SQL | 4072 | 1.00× | — |
+
+### Opsezi `BETWEEN`, 2000 po klasi — ns po upitu (odnos prema B-tree kroz SQL)
+**COUNT**
+| način | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition direktno (bez SQL-a) | 114 (0.009×) | 209 (0.002×) | 241 (0.000×) | DA |
+| SQL funkcija recog_count(a, b) | 195 (0.016×) | 184 (0.002×) | 200 (0.000×) | DA |
+| count(*) kroz virtualnu tabelu | 5379 (0.442×) | 45408 (0.444×) | 426430 (0.441×) | DA |
+| count(*) nad SQLite B-tree | 12170 (1.000×) | 102242 (1.000×) | 967930 (1.000×) | DA |
+
+**FETCH (svi rowid-ovi)**
+| način | 0,1% | 1% | 10% | isti rezultat |
+|---|---|---|---|---|
+| Recognition direktno (bez SQL-a) | 3592 (0.13×) | 27876 (0.12×) | 259223 (0.12×) | DA |
+| rowid-ovi kroz virtualnu tabelu | 19537 (0.73×) | 171727 (0.72×) | 1530631 (0.69×) | DA |
+| rowid-ovi nad SQLite B-tree | 26682 (1.00×) | 239664 (1.00×) | 2228147 (1.00×) | DA |
+
+NAPOMENE:
+- virtualna tabela i B-tree koriste isti SQL i istu konekciju (:memory:); razlika je samo struktura ispod.
+- count(*) kroz virtualnu tabelu: SQLite traži red po red (xNext) i sam broji; recog_count vraća broj iz strukture.
+- predviđanje zapisano pre merenja: D:\sqliteRecog\PREDVIDJANJE_vtab.md

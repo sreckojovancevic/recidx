@@ -5,7 +5,7 @@ Every file in `runs/` is the unedited text output of one `recidx` run on the aut
 The program output is in Serbian. File names are `run_<unix timestamp>.txt`.
 
 **Important:** runs were produced by the version of the code that existed at that moment
-(v0.1 … v0.10). Only the final code (v0.10) is in `src/`. Earlier versions measured fewer
+(v0.1 … v0.11). Only the final code (v0.11) is in `src/`. Earlier versions measured fewer
 structures; their numbers are kept as-is, not re-run.
 
 | File | Version | Command (`cargo run --release -- …`) | What it measures |
@@ -26,6 +26,7 @@ structures; their numbers are kept as-is, not re-run.
 | run_1792405810.txt | v0.8 | `--cache --threads 9` | thread-count check |
 | run_1792414113.txt | v0.9 | `--cache` | fused histogram; default threads = physical cores − 1 |
 | run_1792414722.txt | v0.10 | `--cache` | **digit width 8 / 11 / 12 bits** |
+| run_1792415582.txt | v0.11 | `--cache --vtab` | **Recognition Index used from SQLite: virtual table + `recog_count`** |
 
 `spreadsheets/` holds the Excel summaries made during the work (in Serbian); every number in
 them comes from the run files above, and ratios are formulas.

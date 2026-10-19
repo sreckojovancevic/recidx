@@ -183,10 +183,60 @@ Kept here including the misses (details in [`docs/IDEJA_treci_blok.md`](docs/IDE
   not tested; they would need the MSD/string side of the recognition principle.
 - The Rust structures live in memory without persistence or crash recovery (PoC phase 3,
   durability, not done).
-- SQLite numbers include SQL machinery. Using the Recognition Index *from* SQLite (virtual table)
-  would add part of that cost; how much was **not measured** — this is the open question before any
-  integration decision (PoC phase 4).
+- SQLite numbers in §3–§6 include SQL machinery. §11 measures the Recognition Index *through*
+  SQL (virtual table) for read queries only; writes through the virtual table were not implemented.
 - SQLite was used with default PRAGMAs except where stated; a tuned SQLite (larger cache) was
   measured only for `CREATE INDEX` in memory, where it was *slower* (2.9 s vs 1.8 s).
+- The virtual table in §11 is read-only, in memory, built once from the data; it is not kept in
+  sync with the SQLite table and has no persistence.
 - No claim of O(1) is made: lookup is "compute bucket + binary search inside the bucket", and its
   cost depends on how evenly the bucket function spreads the data.
+
+## 11. Used *from* SQLite — virtual table (v0.11)
+
+`run_1792415582.txt`, 4,581,340 rows, 1 thread. The static Recognition Index (Log(12)) is exposed
+as an SQLite virtual table `recog(k)` (constraints `=`, `>`, `>=`, `<`, `<=`, `BETWEEN` handled by the
+index; `EXPLAIN QUERY PLAN` shows `SCAN recog VIRTUAL TABLE INDEX 1/10`) plus an SQL function
+`recog_count(a, b)`. The **same SQL** runs on the same in-memory connection against `recog` and
+against a normal table with an SQLite B-tree index. All results identical to the B-tree.
+
+**Equality, 200,000 queries (ns per query)**
+
+| Access | ns / query | vs B-tree through SQL |
+|---|---|---|
+| Recognition Index, direct from Rust (no SQL) | 556 | 0.14× |
+| Recognition Index through virtual table | 2,746 | **0.67×** |
+| SQLite B-tree through SQL | 4,072 | 1.00× |
+
+**Range COUNT, 2,000 ranges per class (ns per query)**
+
+| Access | 0.1% | 1% | 10% |
+|---|---|---|---|
+| `SELECT recog_count(a, b)` | 195 | 184 | 200 |
+| `count(*)` through virtual table | 5,379 | 45,408 | 426,430 |
+| `count(*)` on SQLite B-tree | 12,170 | 102,242 | 967,930 |
+
+`recog_count` is 62× / 556× / 4,840× faster than `count(*)` on the B-tree, and does not depend on
+the number of hits. `count(*)` through the virtual table still walks rows (SQLite asks for them one by
+one) but is 2.3× faster than the B-tree walk.
+
+**Range FETCH (all rowids)**: virtual table 0.69–0.73× of the B-tree time
+(19,537 / 171,727 / 1,530,631 ns vs 26,682 / 239,664 / 2,228,147 ns).
+
+**Prediction check** (written before measuring, [`docs/PREDVIDJANJE_vtab.md`](docs/PREDVIDJANJE_vtab.md)):
+
+| Prediction | Result | |
+|---|---|---|
+| equality through virtual table 0.8–1.2× of B-tree | 0.67× | **missed** (faster than predicted) |
+| `count(*)` through virtual table not faster, 1–3× slower | 0.44× (2.3× faster) | **missed** |
+| `recog_count` 1–3 µs per query | 184–200 ns | **missed in value** (direction right) |
+| FETCH through virtual table ±30% of B-tree | 0.69–0.73× | borderline |
+
+The prediction overestimated the cost of SQLite calling into the virtual table per row and
+underestimated what SQLite's own B-tree costs per row (page navigation, record decoding).
+
+**What this answers.** The open question from §10 — does the advantage survive being called from
+SQLite — has a measured answer for reads: SQL adds ~2.2 µs per equality query (556 → 2,746 ns), so
+most of the raw advantage is absorbed, but the virtual table is still 1.48× faster than SQLite's
+B-tree for equality, 1.4× for fetching ranges, and a dedicated SQL function keeps range counting at
+~200 ns.
