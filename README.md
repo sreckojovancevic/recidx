@@ -31,6 +31,7 @@ SQLite database (an M365 backup index, 31 GB file, table `backup_index`), and me
 | 3 | `--range` | `WHERE size_bytes BETWEEN a AND b` — COUNT and FETCH |
 | 4 | `--crud` | 100,000 mixed Create / Delete / Update / Read operations, batches of 1 / 1,000 / 100,000 |
 | 5 | `--vtab` | the Recognition Index used *from* SQLite: virtual table `recog` + SQL function `recog_count(a, b)`, same SQL as against a B-tree |
+| 6 | `--matrix` | **Adaptive Recognition Index (ARI)** and 12 other variants × 5 datasets × 3 sizes × 3 workload mixes: build, memory, lookup (p50/p95/p99), range COUNT/FETCH, insert/delete/update/read cost, memory growth and maintenance pauses |
 | — | `--disk` | adds SQLite on the real database file to steps 1–4 |
 
 Every structure's result is checked against a reference (fingerprint of `(key, rowid)` in order,
@@ -79,6 +80,26 @@ What this says — and does not say:
 - The bucket function decides everything: a plain top-16-bit bucket put 79% of rows in one bucket
   and gave no benefit.
 
+### Adaptive Recognition Index (step 6)
+
+A fixed bucket function cannot adapt when data clusters: a few buckets grow to tens of thousands of
+rows and every insert/delete moves them. ARI (proposed by another AI system, implemented and
+measured here) refines only an overloaded bucket, locally, by the next 8 bits of the key, and
+merges it back when it shrinks. Clustered dataset, 4,581,340 rows, balanced mix
+(`results/matrix/matrix_1792487363_izvestaj.md`):
+
+| | fixed Log(12) (A) | finer fixed Log(14) (B) | **ARI, threshold 4096** | Rust BTreeSet |
+|---|---|---|---|---|
+| CRUD per op | 14.72 µs | 6.42 µs | **0.75 µs** | 0.56 µs |
+| Lookup `=` | 261 ns | 270 ns | 226 ns | 286 ns |
+| Range COUNT 1% | 243 ns | 176 ns | 180 ns | 113,128 ns |
+| Memory | 76.5 MiB | 95.4 MiB | 80.2 MiB | 79.4 MiB |
+
+ARI is 19.7× faster than A and 8.6× faster than B on changes, and on uniform or real (M365) data
+it stays within measurement noise of A. `BTreeSet` is still faster on changes everywhere; the
+Recognition structures stay ~600× faster at counting ranges. Of 8 written ARI criteria 4 pass, of
+8 predictions 1 hit — details and the reasons in [REPORT.md §12](REPORT.md).
+
 Radix sort itself improved by −32% on 9 threads during the work (fused histogram, 11-bit digits),
 but `rayon par_sort_unstable` is still 1.29× faster there — see [REPORT.md §8](REPORT.md).
 
@@ -94,6 +115,7 @@ $env:TMP="D:\sqliteRecog\tmp"; $env:TEMP="D:\sqliteRecog\tmp"
 
 cargo run --release -- --cache                               # step 1
 cargo run --release -- --cache --find --range --crud --disk  # steps 2–4, with SQLite on disk
+cargo run --release -- --cache --matrix                      # step 6 (~55 min on the author's i9)
 ```
 
 | Option | Meaning |
@@ -105,6 +127,9 @@ cargo run --release -- --cache --find --range --crud --disk  # steps 2–4, with
 | `--queries N`, `--ranges N` | number of lookups (200,000) / ranges per width class (2,000) |
 | `--crud-ops N`, `--crud-thr N` | CRUD operations (100,000) / buffer threshold of variant C (65,536) |
 | `--vtab` | step 5 (virtual table) |
+| `--matrix`, `--matrix-reps N` | step 6 (ARI matrix), repetitions per cell (default 3) |
+| `--sizes a,b,c` | dataset sizes for the matrix (default `100000,1000000,4581340`) |
+| `--resume FILE` | continue an interrupted matrix run from its CSV |
 | `--disk`, `--disk-reps N` | include SQLite on the real file (**modifies the database**: creates and drops an index / a table `recidx_t`) |
 
 Output is in Serbian and is also saved to `results/run_<timestamp>.txt`.
@@ -118,26 +143,51 @@ src/find.rs        static Recognition Index, steps 2 and 3
 src/dynidx.rs      dynamic Recognition Index (per-bucket arrays + Fenwick)
 src/crud.rs        step 4: workload, reference model, variants A/B/C, BTreeSet, hash, SQLite
 src/vtab.rs        step 5: Recognition Index as an SQLite virtual table + recog_count()
+src/ari.rs         Adaptive Recognition Index (local refinement, path compression, hysteresis)
+src/posting.rs     variant G: Recognition Index with posting lists (each distinct key stored once)
+src/matrix.rs      step 6: the full matrix, CSV output, criteria and prediction scoring
 REPORT.md          full results, predictions, limits
 results/runs/      unedited output of every run (index in results/README.md)
+results/matrix/    matrix CSVs (every number) and generated reports, both runs
 results/spreadsheets/  Excel summaries made during the work (Serbian)
 docs/recognition_index_poc.md  research framework the work followed (Serbian)
 docs/IDEJA_treci_blok.md       the "third block" idea, predictions and results (Serbian)
 docs/PREDVIDJANJE_vtab.md      virtual-table predictions written before measuring + result (Serbian)
+docs/ARI_KRITERIJUMI_I_PREDVIDJANJA.md  ARI criteria and predictions written before measuring (Serbian)
+docs/KONCEPT.md                the concept behind the work, incl. "autocount" (Serbian)
 ```
 
 ## Transparency notes
 
-- Only the final code (v0.11) is in `src/`. Runs in `results/runs/` were produced by the code as it
+- Only the final code (v0.12b) is in `src/`. Runs in `results/runs/` were produced by the code as it
   was at the time (v0.1 … v0.11); they are kept unedited and are mapped to versions in
   [results/README.md](results/README.md).
-- `Cargo.toml` still says `version = "0.1.0"`; the program prints its real version (v0.11).
+- `Cargo.toml` still says `version = "0.1.0"`; the program prints its real version (v0.12b).
 - The program text still points to `D:\sqliteRecog\IDEJA_treci_blok.md`; in this repository the
   file is [`docs/IDEJA_treci_blok.md`](docs/IDEJA_treci_blok.md). The code is published exactly as
   it was measured, so this was not changed.
 - The database and `pairs_cache.bin` are not published. Only counts and timings are.
 - Predictions were written down before measuring; six of nine missed (one more borderline), and
-  they are reported as misses ([REPORT.md §9 and §11](REPORT.md)).
+  they are reported as misses ([REPORT.md §9 and §11](REPORT.md)). For ARI, seven of eight missed
+  ([REPORT.md §12](REPORT.md)); several of those misses are inside the measurement noise, but the
+  tolerance bands were set before measuring and are not changed afterwards.
+- The first matrix run (v0.12) had a flaw in one dataset ("promenljiv" never overloaded a bucket);
+  it is published next to the corrected run (v0.12b), not replaced.
+
+## Related work
+
+Almost every building block here already exists under another name. This repository does not claim
+a new data structure; what it adds is one framing and a measurement on real data.
+
+| Part of recidx | Known as |
+|---|---|
+| element finds its place from its value, without comparisons | radix / trie indexes; *learned indexes* (Kraska et al., 2018), RadixSpline, PGM-index |
+| `Log(S)` bucket: bit length + next S bits | exponent + mantissa, as in floating point; the bucketing of HDR Histogram |
+| ARI: local refinement by the next 8 bits, path compression | **Adaptive Radix Tree** (Leis et al., 2013) — ARI is close to ART; also Judy arrays, ALEX (2020) |
+| Fenwick tree for range COUNT, rank as a derived property | order-statistic trees, *counted B-trees* (SQLite's B-tree keeps no counts, so `count(*)` walks rows) |
+| variant G, posting lists | inverted index (Lucene and search engines) |
+| global rebuild (variant D) | periodic rebuild; LSM-tree compaction |
+| concatenated key with prefix counts | composite index, prefix scan |
 
 ## Acknowledgments
 
@@ -148,7 +198,9 @@ whose radix `lens_radix.rs` ports); the research question and the PoC framework
 (`docs/recognition_index_poc.md`) the work followed; the choice of a real 4.58M-row database as the
 test field; the requirement to show every result, good or bad; the decision to compare against
 B-tree, hash and SQLite rather than a convenient opponent; the "third block / ternary flow" idea;
-the rule *threads = physical cores − 1*; the scope statement at the top of this README; every run on his own machine, and every result in
+the rule *threads = physical cores − 1*; the decision to implement and test every suggestion of the
+ARI proposal as one matrix, and the list of metrics it reports; the "autocount" view of rank as a
+derived property of order (`docs/KONCEPT.md`); the scope statement at the top of this README; every run on his own machine, and every result in
 `results/runs/`.
 
 **Claude (Anthropic) — implementation, analysis and documentation, working from that direction.**
@@ -162,6 +214,10 @@ In a Claude app session configured for Claude Opus 5.5, Claude:
 - designed the bucket functions (`Log(S)`, `Linear`), the static and dynamic Recognition Index,
   the Fenwick extension, CRUD variants A/B/C and the CRUD workload;
 - proposed the comparisons (BTreeSet, hash, SQLite `synchronous=FULL/OFF`) and the predictions;
+- implemented the Adaptive Recognition Index from another AI system's proposal (all configurations
+  it suggested: thresholds, structural/effective trigger, local sort vs distribution, plain vs
+  Fenwick child counts) plus variants D (global rebuild) and G (posting lists), the matrix, and the
+  criteria/prediction scoring; wrote the ARI predictions;
 - interpreted the results and wrote `REPORT.md`, this README, `results/README.md`, the
   spreadsheets, and the hypothesis/result sections of `docs/IDEJA_treci_blok.md`.
 
@@ -172,6 +228,12 @@ one answer said a 12-bit digit needs no final copy (it needs 3 passes, so it doe
 before measuring); six of nine written predictions missed (§9 and §11 of the report) — including
 the prediction that the advantage would mostly disappear through a virtual table. The memory-traffic
 explanation in §8 is Claude's interpretation; only the timings are measured.
+In the ARI work: the first matrix run had a dataset that never triggered the mechanism it was
+meant to test (fixed in v0.12b); the first memory-growth metric included the measurement buffers
+themselves (fixed before the run); the prediction tolerances (±5–10%) were narrower than the
+measurement noise (structurally identical variants differ by up to 1.7× at ~200 ns); and in
+conversation Claude first called the effective trigger's inactivity a bug, which it is not — it is
+the threshold (§12).
 
 The idea and the decisions are Srećko's; the code and the text were produced by Claude and
 checked against measurements on Srećko's machine.

@@ -11,6 +11,10 @@ the dynamic Recognition Index (per-bucket arrays + Fenwick tree) builds 2× fast
 `BTreeSet`, answers equality lookups 1.22× faster, counts range hits 9.5–321× faster, and is
 about 1.2× *slower* on inserts/deletes/updates. Sorting alone is not where the gain is: inside
 SQLite's own `CREATE INDEX`, sorting is a small part of the total time.
+When data clusters, a fixed bucket function loses on changes; an adaptive variant (ARI, §12) that
+refines only overloaded buckets brings changes on clustered data from 14.7 µs to 0.75 µs per
+operation — still slower than `BTreeSet` (0.56 µs). Almost every building block has a known name
+in the literature (§13).
 
 Everything below is measured; every number has a source file in [`results/runs/`](results/runs).
 Ratios are relative, on one machine and one dataset — read them as behaviour, not as a leaderboard.
@@ -240,3 +244,136 @@ SQLite — has a measured answer for reads: SQL adds ~2.2 µs per equality query
 most of the raw advantage is absorbed, but the virtual table is still 1.48× faster than SQLite's
 B-tree for equality, 1.4× for fetching ranges, and a dedicated SQL function keeps range counting at
 ~200 ns.
+
+
+## 12. Adaptive Recognition Index — the matrix (v0.12 / v0.12b)
+
+**Origin.** Another AI system, shown these results, proposed an *Adaptive Recognition Index*:
+start from the fixed `Log(12)` buckets, and when one bucket grows past a threshold, refine *only
+that bucket* by the next 8 bits of the key (with hysteresis: merge back below half the threshold).
+It also proposed the tests. All of them were implemented as one matrix (`--matrix`); criteria
+K1–K8 and Claude's predictions P1–P8 were written before the run
+([`docs/ARI_KRITERIJUMI_I_PREDVIDJANJA.md`](docs/ARI_KRITERIJUMI_I_PREDVIDJANJA.md)).
+
+**Matrix.** 13 variants × 5 datasets × 3 sizes (100k, 1M, 4.58M) × 3 workload mixes (insert-heavy,
+balanced, delete-heavy), 3 repetitions, 100,000 changes per mix. Every cell is checked: structure
+invariants, every read against a reference model, final fingerprint against the truth. **All cells
+correct in both runs.**
+
+| Variant | What it is |
+|---|---|
+| A_Log12 | dynamic Recognition Index from §6 (fixed buckets) |
+| B_Log14 | the same with 4× finer fixed buckets — the control: is adaptivity better than simply finer? |
+| C_ARI_{1024,4096,16384,65536} | ARI, refinement threshold |
+| C_ARI_4096_efektivni / _lokalni_sort / _fenwick | effective (access-counted) trigger; local sort instead of distribution; Fenwick child counts |
+| D_globalna_izgradnja | global rebuild with a finer bucket function when overloaded |
+| E_BTreeSet, F_sortiran_niz | references (F limited to 3,000 changes above 100k rows) |
+| G_posting | each distinct key stored once + list of rowids |
+
+Datasets: *ravnomeran* (uniform), *grupisan* (90% of rows in 64 narrow clusters), *duplikati* (50% of
+rows on 100 values), *promenljiv* (uniform start, changes go into 8 new narrow clusters — drift),
+*m365* (the real `size_bytes`).
+
+**Runs.** `matrix_1792483070` (v0.12) and `matrix_1792487363` (v0.12b), both in
+[`results/matrix/`](results/matrix). In v0.12 the *promenljiv* dataset never overloaded a bucket
+(largest bucket 1,312 rows), so it did not test what it was meant to test; v0.12b fixed the dataset
+and added per-operation latency (p50/p95/p99 for insert/delete/update/read) and memory growth after
+changes. Criteria and predictions were not changed between runs. Numbers below are from v0.12b,
+4,581,340 rows, balanced mix.
+
+### 12.1 Where ARI wins: changes on clustered data
+
+| clustered | CRUD µs/op | insert ns (p99) | delete ns (p99) | eq ns | COUNT 1% ns | memory MiB | refinements |
+|---|---|---|---|---|---|---|---|
+| A_Log12 | 14.72 | 14,609 (58,500) | 13,036 (54,000) | 261 | 243 | 76.5 | — |
+| B_Log14 | 6.42 | 6,011 (28,200) | 5,154 (22,500) | 270 | 176 | 95.4 | — |
+| **C_ARI_4096** | **0.75** | 880 (3,700) | 492 (1,100) | 226 | 180 | 80.2 | 175 |
+| C_ARI_65536 | 14.93 | 15,611 | 13,504 | 300 | 187 | 79.0 | 0 |
+| D_globalna_izgradnja | 2.16 | 2,300 | 1,772 | 267 | 249 | 168 | 0 |
+| E_BTreeSet | 0.56 | 600 (1,100) | 399 (900) | 286 | 113,128 | 79.4 | — |
+| G_posting | 21.24 | 21,154 | 18,856 | 332 | 358 | 91.3 | — |
+
+ARI is 19.7× faster than A and 8.6× faster than the finer fixed B on changes, for +5% memory.
+The gain is in moving fewer elements per insert/delete, not in lookups: a lookup inside a large
+bucket is a binary search, so bucket size barely matters (eq A/C 1.15×). Threshold 4096 was best;
+65536 never triggered and equals A.
+
+### 12.2 Where it does not
+
+- **Uniform and real (M365) data:** ARI ≈ A (no or one refinement); differences are inside the
+  noise (12.4).
+- **Duplicates:** a key repeated ~23,000 times cannot be split by its bits. Delete costs 5.4 µs in A,
+  6–8 µs in ARI, 0.5 µs in `BTreeSet`; posting lists (G) bring it to 2.4 µs and use 0.88× of A's memory.
+- **Drift (*promenljiv*):** ARI_1024 is the fastest Recognition variant (0.45 µs vs A 0.72), but
+  `BTreeSet` is 0.28 µs. Global rebuild (D) pays 290 ms of pauses in total (longest 104 ms) and
+  doubles memory; ARI's local refinements pause 0.2 ms in total (longest 41 µs).
+- **Effective trigger** (refine only after accesses ≥ 1/8 of the bucket size) never fired on the
+  clustered data: a top bucket there holds a whole cluster (~64k rows → ~8k accesses needed), and
+  100,000 changes spread over 64 clusters give ~1.5k per bucket. So it stayed equal to A (15.19 µs).
+  This is the chosen threshold, not a defect; on drift (small, growing buckets) it fired like the
+  structural trigger.
+
+### 12.3 Maintenance cost — memory after changes
+
+Balanced mix, MiB after build → after changes: A 76.5 → 126.1, ARI_4096 79.0 → 128.6,
+`BTreeSet` 79.4 → 96.2 (uniform data). Per-bucket vectors double their capacity on the first insert
+after an exact-size build; on drift, where changes go into few buckets, growth is ~1 MiB. A
+real implementation would grow buckets in smaller steps or shrink them in the background — not
+measured here.
+
+### 12.4 Measurement noise
+
+On uniform data all ARI configurations have *identical* structure (0 refinements), yet lookup
+medians range 226–400 ns and COUNT 151–467 ns. Differences below ~1.5× in the sub-microsecond
+columns are therefore not significant in this matrix; the CRUD differences in 12.1 (8–20×) are.
+
+### 12.5 Criteria and predictions (v0.12b)
+
+| # | criterion (from the proposal) | measured | |
+|---|---|---|---|
+| K1 | locality: a change touches only its bucket | 0 violations | pass |
+| K2 | correctness | all checks correct | pass |
+| K3 | uniform data: lookup ≤ 1.10× A | 0.90 / 1.03 / 0.84 | pass |
+| K4 | ≥ 2× faster than A on the overloaded part (queries) | best 1.35× | **fail** — the gain is in changes (19.7×), the criterion measured queries |
+| K5 | memory ≤ 1.25× A | max 1.30 (small sizes; 1.03–1.05 at 4.58M) | **fail** |
+| K6 | ≤ 2 merges of the same bucket | max 1 | pass |
+| K7 | CRUD incl. pauses ≤ A everywhere | A/C 0.90–22.5 | **fail** (only drift/delete-heavy, 0.90, inside noise) |
+| K8 | control: ARI vs finer fixed B | clustered CRUD B/C 8.58; drift 1.11 | ARI better on changes |
+
+| # | prediction (Claude, before measuring) | measured | |
+|---|---|---|---|
+| P1 | M365: ARI ≈ A ±10%, ≤ 10 refined nodes | eq 0.94, COUNT 0.89, CRUD 1.01; 1 node | missed (COUNT by 1 pt) |
+| P2 | uniform: 0 refinements, ARI = A ±5% | 0 refinements; 0.84–1.03 | missed |
+| P3 | clustered: A/ARI lookup ≥ 1.5; B gets ≥ 80% of the gain | 1.15; B −26% | missed |
+| P4 | duplicates: no ARI gain; G ≤ 0.7× memory; G COUNT ±20% | ARI 1.05; G 0.88; G COUNT 1.74× | missed (first part right) |
+| P5 | drift: A/ARI CRUD ≥ 1.5; D pause ≥ 100 ms | 1.35; 108 ms | missed (pause right) |
+| P6 | longest refinement pause ≤ 2 ms | 0.20 ms | **hit** |
+| P7 | Fenwick vs plain child counts < 5% | 0.65–1.16 | missed (noise) |
+| P8 | distribution ≥ 2× faster than local sort in refinement, total < 5% | 1.15; total 0.96–1.03 | missed (total right) |
+
+One hit of eight, as in v0.12. The largest real miss is P3: Claude expected the gain to show in
+lookups and expected a finer fixed bucket to capture most of it; both were wrong.
+
+**What this answers.** Adaptivity is worth it for one thing — changes on data that clusters —
+where it is an order of magnitude better than any fixed bucket function and close to a B-tree,
+while keeping the Recognition advantage for range counting. It does not help duplicates, and it
+does not beat `BTreeSet` on changes anywhere.
+
+## 13. Related work
+
+Nearly every part of this work exists in the literature under another name; this repository makes
+no claim of a new data structure.
+
+- *Element finds its place from its value:* radix/trie indexes; learned indexes (Kraska et al.,
+  "The Case for Learned Index Structures", 2018), RadixSpline, PGM-index.
+- *`Log(S)` bucket function:* exponent + mantissa as in floating point; HDR Histogram bucketing.
+- *ARI:* close to the Adaptive Radix Tree (Leis, Kemper, Neumann, 2013) — adaptive nodes by key
+  bytes with path compression; also Judy arrays, and ALEX (2020) for adaptive node splitting.
+- *Fenwick-tree range COUNT:* order-statistic trees and counted B-trees. SQLite's B-tree stores no
+  subtree counts, which is why its `count(*)` walks rows (§5, §11).
+- *Posting lists (G):* inverted indexes (Lucene).
+- *Global rebuild (D):* periodic rebuilding; LSM-tree compaction.
+
+What this repository adds is one framing (recognition for sorting, indexing and counting) and an
+open measurement on a real 4.58M-row database, with predictions written before measuring and misses
+reported as misses.

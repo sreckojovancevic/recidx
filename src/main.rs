@@ -1,4 +1,4 @@
-//! recidx v0.11 — Recognition Index PoC, korak 1: size_bytes
+//! recidx v0.12b — Recognition Index PoC, korak 1: size_bytes
 //!
 //! Meri izgradnju uređenog indeksa nad kolonom backup_index.size_bytes:
 //!   * izvlačenje (size_bytes, rowid) iz baze (samo čitanje)
@@ -61,6 +61,9 @@ macro_rules! out {
 mod find;
 mod crud;
 mod dynidx;
+mod ari;
+mod matrix;
+mod posting;
 mod vtab;
 
 fn ms(d: std::time::Duration) -> f64 { d.as_secs_f64() * 1000.0 }
@@ -265,6 +268,10 @@ fn main() {
     let mut do_range = false;
     let mut do_crud = false;
     let mut do_vtab = false;
+    let mut do_matrix = false;
+    let mut matrix_reps = 3usize;
+    let mut resume: Option<String> = None;
+    let mut sizes: Vec<usize> = vec![100_000, 1_000_000, 4_581_340];
     let mut crud_ops = 100_000usize;
     let mut crud_thr = 65_536usize;
     let mut nr = 2_000usize;
@@ -286,16 +293,20 @@ fn main() {
             "--range" => do_range = true,
             "--crud" => do_crud = true,
             "--vtab" => do_vtab = true,
+            "--matrix" => do_matrix = true,
+            "--matrix-reps" => { i += 1; matrix_reps = args[i].parse().unwrap(); }
+            "--resume" => { i += 1; resume = Some(args[i].clone()); do_matrix = true; }
+            "--sizes" => { i += 1; sizes = args[i].split(',').map(|x| x.trim().parse().unwrap()).collect(); }
             "--crud-ops" => { i += 1; crud_ops = args[i].parse().unwrap(); }
             "--crud-thr" => { i += 1; crud_thr = args[i].parse().unwrap(); }
             "--ranges" => { i += 1; nr = args[i].parse().unwrap(); }
             "--queries" => { i += 1; nq = args[i].parse().unwrap(); }
-            x => { eprintln!("nepoznat argument: {x}\nupotreba: recidx [--db PUTANJA] [--reps N] [--threads N] [--cache] [--find] [--queries N] [--range] [--ranges N_PO_KLASI] [--crud] [--crud-ops N] [--crud-thr N] [--vtab] [--disk] [--disk-reps N]"); std::process::exit(2); }
+            x => { eprintln!("nepoznat argument: {x}\nupotreba: recidx [--db PUTANJA] [--reps N] [--threads N] [--cache] [--find] [--queries N] [--range] [--ranges N_PO_KLASI] [--crud] [--crud-ops N] [--crud-thr N] [--vtab] [--matrix] [--matrix-reps N] [--sizes a,b,c] [--resume CSV] [--disk] [--disk-reps N]"); std::process::exit(2); }
         }
         i += 1;
     }
     let mut o = String::new();
-    out!(o, "# recidx v0.11 — Recognition Index, korak 1: backup_index.size_bytes");
+    out!(o, "# recidx v0.12b — Recognition Index, korak 1: backup_index.size_bytes");
     out!(o, "SQLite (bundled): {} | baza: {db}", rusqlite::version());
     out!(o, "procesor: {phys} fizičkih jezgara, {logical} logičkih | podrazumevano niti = fizička − 1");
     out!(o, "ponavljanja: {reps} | niti za paralelni deo: {threads} | keš parova: {use_cache} | disk test: {disk} ({disk_reps}x)");
@@ -361,6 +372,11 @@ fn main() {
     let distinct = 1 + reference.windows(2).filter(|w| w[0].0 != w[1].0).count();
     out!(o, "različitih vrednosti: {distinct} | otisak reference (ključ, rowid): {fp_ref:016x}");
 
+    if do_matrix {
+        matrix::run(&mut o, &keyed, matrix_reps, resume, &sizes, nq, nr, crud_ops);
+        save(&o);
+        return;
+    }
     if do_find || do_range || do_crud || do_vtab {
         if do_find { find::step2(&mut o, &raw, &keyed, root, reps, nq, disk, &db); }
         if do_range { find::step3(&mut o, &raw, &keyed, root, reps, nr, disk, &db); }

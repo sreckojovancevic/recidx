@@ -5,7 +5,7 @@ Every file in `runs/` is the unedited text output of one `recidx` run on the aut
 The program output is in Serbian. File names are `run_<unix timestamp>.txt`.
 
 **Important:** runs were produced by the version of the code that existed at that moment
-(v0.1 … v0.11). Only the final code (v0.11) is in `src/`. Earlier versions measured fewer
+(v0.1 … v0.12b). Only the final code (v0.12b) is in `src/`. Earlier versions measured fewer
 structures; their numbers are kept as-is, not re-run.
 
 | File | Version | Command (`cargo run --release -- …`) | What it measures |
@@ -27,6 +27,17 @@ structures; their numbers are kept as-is, not re-run.
 | run_1792414113.txt | v0.9 | `--cache` | fused histogram; default threads = physical cores − 1 |
 | run_1792414722.txt | v0.10 | `--cache` | **digit width 8 / 11 / 12 bits** |
 | run_1792415582.txt | v0.11 | `--cache --vtab` | **Recognition Index used from SQLite: virtual table + `recog_count`** |
+
+## Matrix runs (`matrix/`)
+
+Step 6 writes a CSV (`redova,skup,varijanta,metrika,vrednost` — rows, dataset, variant, metric,
+value; every measured number) and a generated report (`*_izvestaj.md`, Serbian) that scores criteria
+K1–K8 and predictions P1–P8.
+
+| Files | Version | Command | Notes |
+|---|---|---|---|
+| matrix_1792483070.csv / _izvestaj.md | v0.12 | `--cache --matrix` | first run; dataset *promenljiv* never overloaded a bucket (flaw, see REPORT §12) |
+| matrix_1792487363.csv / _izvestaj.md | v0.12b | `--cache --matrix` | **corrected run** + per-operation latency and memory growth; ~55 min |
 
 `spreadsheets/` holds the Excel summaries made during the work (in Serbian); every number in
 them comes from the run files above, and ratios are formulas.
